@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"image/png"
+	"io"
+	"io/ioutil"
 	"os"
 
 	"golang.org/x/image/colornames"
@@ -16,45 +20,20 @@ var clearColor = colornames.Skyblue
 var tilemap *tmx.Map
 var sprites []*pixel.Sprite
 
-type tile struct {
-	mapPos   pixel.Vec
-	posCoord pixel.Vec
+// Tile maps a tilemap coordinate to be drawn at `GamePos`
+type Tile struct {
+	MapPos  pixel.Vec `json:"mapPos"`
+	GamePos pixel.Vec `json:"gamePos"`
 }
 
-var tiles = []*tile{
-	// Tree
-	&tile{mapPos: pixel.V(3.0, 0.0), posCoord: pixel.V(3.0, 1.0)}, // tree trunk
-	&tile{mapPos: pixel.V(2.0, 1.0), posCoord: pixel.V(2.0, 2.0)}, // top-left tree
-	&tile{mapPos: pixel.V(3.0, 1.0), posCoord: pixel.V(3.0, 2.0)}, // top-mid tree
-	&tile{mapPos: pixel.V(4.0, 1.0), posCoord: pixel.V(4.0, 2.0)}, // top-right tree
-
-	// Top soil
-	&tile{mapPos: pixel.V(2.0, 7.0), posCoord: pixel.V(0.0, 0.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 7.0), posCoord: pixel.V(1.0, 0.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 7.0), posCoord: pixel.V(2.0, 0.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 7.0), posCoord: pixel.V(3.0, 0.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 7.0), posCoord: pixel.V(4.0, 0.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 7.0), posCoord: pixel.V(5.0, 0.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 7.0), posCoord: pixel.V(6.0, 0.0)}, // ground
-
-	// Lower soil
-	&tile{mapPos: pixel.V(2.0, 6.0), posCoord: pixel.V(0.0, -1.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 6.0), posCoord: pixel.V(1.0, -1.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 6.0), posCoord: pixel.V(2.0, -1.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 6.0), posCoord: pixel.V(3.0, -1.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 6.0), posCoord: pixel.V(4.0, -1.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 6.0), posCoord: pixel.V(5.0, -1.0)}, // ground
-	&tile{mapPos: pixel.V(2.0, 6.0), posCoord: pixel.V(6.0, -1.0)}, // ground
-
-	// Sign
-	&tile{mapPos: pixel.V(1.0, 2.0), posCoord: pixel.V(1.0, 1.0)},
-
-	// Bones
-	&tile{mapPos: pixel.V(3.0, 2.0), posCoord: pixel.V(4.0, 1.0)},
-	&tile{mapPos: pixel.V(4.0, 2.0), posCoord: pixel.V(5.0, 1.0)},
+// Level represents a single game scene composed of tiles
+//   - Tiles []*tile
+type Level struct {
+	Name  string  `json:"name"`
+	Tiles []*Tile `json:"tiles"`
 }
 
-func gameloop(win *pixelgl.Window) {
+func gameloop(win *pixelgl.Window, level *Level) {
 	tm := tilemap.Tilesets[0]
 	w := float64(tm.TileWidth)
 	h := float64(tm.TileHeight)
@@ -67,13 +46,13 @@ func gameloop(win *pixelgl.Window) {
 	for !win.Closed() {
 		win.Clear(clearColor)
 
-		for _, coord := range tiles {
-			iX = coord.mapPos.X * w
+		for _, coord := range level.Tiles {
+			iX = coord.MapPos.X * w
 			fX = iX + w
-			iY = coord.mapPos.Y * h
+			iY = coord.MapPos.Y * h
 			fY = iY + h
 			sprite.Set(sprite.Picture(), pixel.R(iX, iY, fX, fY))
-			pos := coord.posCoord.ScaledXY(pixel.V(w, h))
+			pos := coord.GamePos.ScaledXY(pixel.V(w, h))
 			sprite.Draw(win, pixel.IM.Moved(pos.Add(pixel.V(0, h))))
 		}
 		win.Update()
@@ -95,7 +74,11 @@ func run() {
 	tilemap, err = tmx.ReadFile("gameart2d-desert.tmx")
 	panicIfErr(err)
 
-	gameloop(win)
+	// Load the level from file
+	level, err := ParseLevelFile("level.json")
+	panicIfErr(err)
+
+	gameloop(win, level)
 }
 
 func loadSprite(path string) *pixel.Sprite {
@@ -107,6 +90,43 @@ func loadSprite(path string) *pixel.Sprite {
 
 	pd := pixel.PictureDataFromImage(img)
 	return pixel.NewSprite(pd, pd.Bounds())
+}
+
+// ParseLevelFile reads a file from the disk at `path`
+// and unmarshals it to a `*Level`
+func ParseLevelFile(path string) (*Level, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	bytes, err := ioutil.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	var newLevel Level
+	json.Unmarshal(bytes, &newLevel)
+	return &newLevel, nil
+}
+
+// Save serializes a level to a JSON data file
+func (level *Level) Save(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	b, err := json.MarshalIndent(level, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	r := bytes.NewReader(b)
+	_, err = io.Copy(f, r)
+	return err
 }
 
 func main() {
